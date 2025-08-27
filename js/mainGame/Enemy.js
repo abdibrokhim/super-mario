@@ -14,6 +14,9 @@ function Enemy() {
   this.grounded = false;
   this.type;
   this.state;
+  this.spiked = false; // adaptive: hurts when stomped
+  this.fireResistant = false; // adaptive: ignores bullets
+  this.isAlly = false; // befriended and follows mario
 
   this.sX;
   this.sY = 0;

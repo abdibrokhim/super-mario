@@ -30,6 +30,11 @@ function MarioGame() {
   var gravityInverted = false; // G key
   var coinMagnetEnabled = false; // M key
   var starModeActive = false; // I key
+  var glitchModeActive = false; // H key: invert controls
+
+  // emotion states
+  var currentEmotion = 'none'; // 'none' | 'happy' | 'sad' | 'angry'
+  var emotionExpireAt = 0; // timestamp ms
 
   var currentLevel;
 
@@ -122,6 +127,24 @@ function MarioGame() {
         if (starModeActive) {
           gameSound.play('powerUp');
         }
+      } else if (e.keyCode == 72) {
+        // H: glitch mode (invert controls)
+        glitchModeActive = !glitchModeActive;
+      } else if (e.keyCode == 49) {
+        // 1: happy
+        currentEmotion = 'happy';
+        emotionExpireAt = Date.now() + 8000; // 8s
+      } else if (e.keyCode == 50) {
+        // 2: sad
+        currentEmotion = 'sad';
+        emotionExpireAt = Date.now() + 8000;
+      } else if (e.keyCode == 51) {
+        // 3: angry
+        currentEmotion = 'angry';
+        emotionExpireAt = Date.now() + 6000; // shorter burst
+      } else if (e.keyCode == 66) {
+        // B: befriend nearest goomba
+        that.befriendNearestGoomba();
       }
     });
 
@@ -222,6 +245,15 @@ function MarioGame() {
     }
 
     for (var i = 0; i < goombas.length; i++) {
+      // allies follow mario gently
+      if (goombas[i].isAlly) {
+        var desiredDir = 0;
+        if (Math.abs((goombas[i].x + goombas[i].width / 2) - (mario.x + mario.width / 2)) > 40) {
+          desiredDir = (mario.x > goombas[i].x) ? 1 : -1;
+        }
+        goombas[i].velX = desiredDir * 1.2;
+      }
+
       goombas[i].draw();
       goombas[i].update();
     }
@@ -234,6 +266,8 @@ function MarioGame() {
       that.magnetCollectCoins();
     }
 
+    that.updateEmotion();
+
     mario.draw();
     that.updateMario();
     that.wallCollision();
@@ -243,14 +277,23 @@ function MarioGame() {
   this.showInstructions = function() {
     gameUI.writeText('Controls: Arrow keys for direction, shift to run, ctrl for bullets', 30, 30);
     gameUI.writeText('Tip: Jumping while running makes you jump higher', 30, 60);
-    gameUI.writeText('New: G=Flip Gravity, M=Coin Magnet, I=Star Mode', 30, 90);
+    gameUI.writeText('New: G=Flip Gravity, M=Coin Magnet, I=Star Mode, H=Glitch', 30, 90);
+    gameUI.writeText('Emotions: 1=Happy, 2=Sad, 3=Angry, B=Befriend', 30, 120);
   };
 
   this.renderStatus = function() {
     var statusText = 'G: ' + (gravityInverted ? 'Gravity UP' : 'Gravity DOWN') +
       ' | M: ' + (coinMagnetEnabled ? 'Magnet ON' : 'Magnet OFF') +
-      ' | I: ' + (starModeActive ? 'Star ON' : 'Star OFF');
+      ' | I: ' + (starModeActive ? 'Star ON' : 'Star OFF') +
+      ' | H: ' + (glitchModeActive ? 'Glitch ON' : 'Glitch OFF') +
+      ' | Mood: ' + currentEmotion.toUpperCase();
     gameUI.writeText(statusText, 30, 20);
+  };
+
+  this.updateEmotion = function() {
+    if (currentEmotion != 'none' && Date.now() > emotionExpireAt) {
+      currentEmotion = 'none';
+    }
   };
 
   this.renderMap = function() {
@@ -437,6 +480,10 @@ function MarioGame() {
   };
 
   this.checkElementMarioCollision = function(element, row, column) {
+    // sad emotion: phase through some blocks (coin and useless boxes)
+    if (currentEmotion == 'sad' && (element.type == 2 || element.type == 4)) {
+      return;
+    }
     var collisionDirection = that.collisionCheck(mario, element);
 
     if (collisionDirection == 'l' || collisionDirection == 'r') {
@@ -613,6 +660,10 @@ function MarioGame() {
 
   this.checkEnemyMarioCollision = function() {
     for (var i = 0; i < goombas.length; i++) {
+      if (goombas[i].isAlly) {
+        // allies don't hurt mario
+        continue;
+      }
       // star mode: destroy enemies on any contact
       if (starModeActive && goombas[i].state != 'dead' && goombas[i].state != 'deadFromBullet') {
         var starColl = that.collisionCheck(goombas[i], mario);
@@ -631,17 +682,45 @@ function MarioGame() {
 
         if (collWithMario == 't') {
           //kill goombas if collision is from top
-          goombas[i].state = 'dead';
+          if (goombas[i].spiked) {
+            // spiked goombas hurt when stomped
+            collWithMario = 'l'; // treat like side collision damage below
+          } else {
+            goombas[i].state = 'dead';
 
-          mario.velY = -mario.speed;
+            mario.velY = -mario.speed;
 
-          score.totalScore += 1000;
-          score.updateTotalScore();
+            score.totalScore += 1000;
+            score.updateTotalScore();
+
+            // adapt: track stomp streak
+            if (!that._stompCount) { that._stompCount = 0; }
+            that._stompCount++;
+            if (that._stompCount >= 3) {
+              // future goombas gain spikes
+              for (var s = 0; s < goombas.length; s++) {
+                if (goombas[s].state != 'dead' && goombas[s].state != 'deadFromBullet') {
+                  goombas[s].spiked = true;
+                }
+              }
+            }
 
           //sound when enemy dies
           gameSound.play('killEnemy');
-        } else if (collWithMario == 'r' || collWithMario == 'l' || collWithMario == 'b') {
+          }
+        } 
+        if (collWithMario == 'r' || collWithMario == 'l' || collWithMario == 'b') {
           goombas[i].velX *= -1;
+
+          // angry short-range attack: side contact can blast enemy
+          if (currentEmotion == 'angry') {
+            goombas[i].state = 'deadFromBullet';
+            score.totalScore += 1000;
+            score.updateTotalScore();
+            mario.velX *= -0.5; // recoil
+            gameSound.play('killEnemy');
+            continue;
+          }
 
           if (mario.type == 'big') {
             mario.type = 'small';
@@ -693,6 +772,32 @@ function MarioGame() {
     }
   };
 
+  this.befriendNearestGoomba = function() {
+    var nearestIndex = -1;
+    var nearestDist = 999999;
+    for (var i = 0; i < goombas.length; i++) {
+      if (goombas[i].state == 'dead' || goombas[i].state == 'deadFromBullet' || goombas[i].isAlly) {
+        continue;
+      }
+      var dx = (goombas[i].x + goombas[i].width / 2) - (mario.x + mario.width / 2);
+      var dy = (goombas[i].y + goombas[i].height / 2) - (mario.y + mario.height / 2);
+      var d2 = dx * dx + dy * dy;
+      if (d2 < nearestDist) {
+        nearestDist = d2;
+        nearestIndex = i;
+      }
+    }
+    if (nearestIndex >= 0 && nearestDist < 200 * 200) {
+      goombas[nearestIndex].isAlly = true;
+      goombas[nearestIndex].spiked = false;
+      goombas[nearestIndex].fireResistant = false;
+      // flip direction toward mario immediately
+      goombas[nearestIndex].velX = (mario.x > goombas[nearestIndex].x) ? 1 : -1;
+      score.totalScore += 100; // tiny score for recruiting
+      score.updateTotalScore();
+    }
+  };
+
   this.checkBulletEnemyCollision = function() {
     for (var i = 0; i < goombas.length; i++) {
       for (var j = 0; j < bullets.length; j++) {
@@ -702,6 +807,11 @@ function MarioGame() {
         }
 
         if (collWithBullet) {
+          // fire-resistant goombas ignore bullets
+          if (goombas[i].fireResistant) {
+            bullets.splice(j, 1);
+            continue;
+          }
           bullets[j] = null;
           bullets.splice(j, 1);
 
@@ -709,6 +819,17 @@ function MarioGame() {
 
           score.totalScore += 1000;
           score.updateTotalScore();
+
+          // adapt: track bullet streak
+          if (!that._bulletCount) { that._bulletCount = 0; }
+          that._bulletCount++;
+          if (that._bulletCount >= 3) {
+            for (var b = 0; b < goombas.length; b++) {
+              if (goombas[b].state != 'dead' && goombas[b].state != 'deadFromBullet') {
+                goombas[b].fireResistant = true;
+              }
+            }
+          }
 
           //sound when enemy dies
           gameSound.play('killEnemy');
@@ -806,7 +927,8 @@ function MarioGame() {
         mario.jumping = true;
         mario.grounded = false;
         var gdir = gravityInverted ? -1 : 1;
-        mario.velY = -(mario.speed / 2 + 5.5) * gdir;
+        var jumpBoost = (currentEmotion == 'happy') ? 1.5 : 0;
+        mario.velY = -((mario.speed / 2 + 5.5 + jumpBoost)) * gdir;
 
         // mario sprite position
         if (mario.frame == 0 || mario.frame == 1) {
@@ -820,7 +942,16 @@ function MarioGame() {
       }
     }
 
-    if (keys[39]) {
+    var pressRight = keys[39];
+    var pressLeft = keys[37];
+    if (glitchModeActive) {
+      // invert horizontal inputs
+      var tmp = pressRight;
+      pressRight = pressLeft;
+      pressLeft = tmp;
+    }
+
+    if (pressRight) {
       //right arrow
       that.checkMarioPos(); //if mario goes to the center of the screen, sidescroll the map
 
@@ -844,7 +975,7 @@ function MarioGame() {
       }
     }
 
-    if (keys[37]) {
+    if (pressLeft) {
       //left arrow
       if (mario.velX > -mario.speed) {
         mario.velX--;
@@ -870,6 +1001,11 @@ function MarioGame() {
     if (starModeActive) {
       baseSpeed += 1;
     }
+    if (currentEmotion == 'happy') {
+      baseSpeed += 0.5;
+    } else if (currentEmotion == 'angry') {
+      baseSpeed += 0.3;
+    }
     mario.speed = baseSpeed;
 
     if (keys[17] && mario.type == 'fire') {
@@ -882,6 +1018,7 @@ function MarioGame() {
         } else {
           var direction = 1;
         }
+        if (glitchModeActive) { direction *= -1; }
         bullet.init(mario.x, mario.y, direction);
         bullets.push(bullet);
 
